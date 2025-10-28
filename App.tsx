@@ -76,11 +76,37 @@ const SystemSetupError: React.FC<{ message: string; sqlScript: string }> = ({ me
     </div>
 );
 
+const SchemaMigrationError: React.FC<{ message: string; sqlScript: string }> = ({ message, sqlScript }) => (
+    <div className="flex flex-col justify-center items-center h-screen w-screen p-4 bg-gradient-to-br from-orange-900/20 via-[var(--bg-dark-primary)] to-[var(--bg-dark-primary)] text-[var(--text-primary)]">
+        <div className="glass-card p-8 rounded-lg text-center max-w-4xl animate-fadeInUp border-2 border-orange-500/50 shadow-2xl shadow-orange-500/20">
+            <DatabaseIcon className="w-16 h-16 mx-auto mb-4 text-orange-400" />
+            <h1 className="text-3xl font-bold text-orange-400 mb-4">تحديث مطلوب لقاعدة البيانات</h1>
+            <p className="text-lg mb-6 text-[var(--text-secondary)]">
+                {message}
+            </p>
+            <p className="mb-4 font-semibold">لحل المشكلة، يرجى تنفيذ كود SQL التالي مباشرة في محرر Supabase الخاص بمشروعك (Database &gt; SQL Editor):</p>
+            <div className="text-left bg-black/50 p-4 rounded-md font-mono text-sm text-gray-300 relative">
+                <button
+                    onClick={() => navigator.clipboard.writeText(sqlScript)}
+                    className="absolute top-2 right-2 bg-gray-700 hover:bg-gray-600 text-white text-xs py-1 px-2 rounded"
+                >
+                    نسخ
+                </button>
+                <pre className="whitespace-pre-wrap"><code>{sqlScript}</code></pre>
+            </div>
+             <p className="mt-6 text-sm text-gray-500">
+                بعد تنفيذ الكود بنجاح، قم بتحديث هذه الصفحة.
+            </p>
+        </div>
+    </div>
+);
+
 
 const App: React.FC = () => {
     const [isAuthenticated, setIsAuthenticated] = useLocalStorage<boolean>('mshop_isAuthenticated', false);
     const [currentUser, setCurrentUser] = useLocalStorage<User | null>('mshop_currentUser', null);
     const [systemError, setSystemError] = useState<string | null>(null);
+    const [schemaError, setSchemaError] = useState<string | null>(null);
     const [isLoadingSystem, setIsLoadingSystem] = useState(true);
 
     const ROLES_SEED_SQL = `-- This robust, transactional script repairs and seeds the essential user roles,
@@ -140,6 +166,22 @@ DELETE FROM public.roles WHERE name LIKE 'User_legacy_%';
 
 COMMIT;`;
 
+    const SCHEMA_MIGRATION_SQL = `-- This script adds missing columns required by the latest application version.
+-- It is safe to run multiple times.
+
+-- Add 'is_serialized' column to track items with serial numbers (like phones).
+ALTER TABLE public.products
+ADD COLUMN IF NOT EXISTS is_serialized BOOLEAN NOT NULL DEFAULT false;
+
+-- Add 'national_id' column to store customer's national ID, important for installments.
+ALTER TABLE public.customers
+ADD COLUMN IF NOT EXISTS national_id TEXT;
+
+-- Add 'contact_person' column for better supplier management.
+ALTER TABLE public.suppliers
+ADD COLUMN IF NOT EXISTS contact_person TEXT;
+`;
+
     // System health check on startup
     useEffect(() => {
         const checkSystemHealth = async () => {
@@ -149,20 +191,36 @@ COMMIT;`;
                 return;
             }
             try {
-                // Check if the essential roles exist in the database.
-                const { error, count } = await supabase
+                // Check 1: Essential roles existence.
+                const { error: rolesError, count } = await supabase
                     .from('roles')
                     .select('id', { count: 'exact', head: true })
                     .in('id', ['admin', 'user']);
                 
-                if (error) throw error;
+                if (rolesError) throw rolesError;
                 
                 if (count === null || count < 2) {
                      setSystemError("الأدوار الأساسية ('Admin', 'User') غير موجودة في قاعدة البيانات. هذا يمنع المستخدمين الجدد من التسجيل ويعطل النظام.");
                 }
+
+                // Check 2: Schema (columns) existence.
+                const checks = [
+                    supabase.from('products').select('is_serialized').limit(1),
+                    supabase.from('customers').select('national_id').limit(1),
+                    supabase.from('suppliers').select('contact_person').limit(1)
+                ];
+                const results = await Promise.all(checks);
+                const columnError = results.find(res => res.error && (res.error.message.includes('column') || res.error.message.includes('does not exist')));
+                
+                if (columnError) {
+                    setSchemaError("يبدو أن قاعدة بياناتك غير محدّثة. بعض الأعمدة الهامة مفقودة، مما يسبب أخطاء في عمليات الحفظ والاسترجاع. يرجى تحديث مخطط قاعدة البيانات الخاصة بك.");
+                }
+
             } catch (error: any) {
                 console.error("System Health Check Failed:", error);
-                setSystemError(`فشل التحقق من سلامة النظام: ${error.message}`);
+                if (!systemError && !schemaError) {
+                    setSystemError(`فشل التحقق من سلامة النظام: ${error.message}`);
+                }
             } finally {
                 setIsLoadingSystem(false);
             }
@@ -252,8 +310,14 @@ COMMIT;`;
         return <LoadingSpinner />;
     }
     
+    // Prioritize critical setup errors first
     if (systemError) {
         return <SystemSetupError message={systemError} sqlScript={ROLES_SEED_SQL} />;
+    }
+    
+    // Then show schema migration errors
+    if (schemaError) {
+        return <SchemaMigrationError message={schemaError} sqlScript={SCHEMA_MIGRATION_SQL} />;
     }
 
     if (!isAuthenticated || !currentUser) {
