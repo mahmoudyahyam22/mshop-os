@@ -664,7 +664,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     };
 
     const deleteRole = async (roleId: string) => {
-        if (roleId === 'r1' || roleId === 'r2') {
+        if (roleId === 'admin' || roleId === 'user') {
             alert('لا يمكن حذف الأدوار الأساسية (Admin, User).');
             return;
         }
