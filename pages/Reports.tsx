@@ -1,4 +1,5 @@
 
+
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import type { Sale, Product, ProductInstance, Purchase, Expense, InstallmentPlan, TreasuryTransaction, SalesReturn } from '../types';
 import PageHeader from '../components/PageHeader';
@@ -169,8 +170,9 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
     const totalReturnsValue = currentReturns.reduce((sum, r) => sum + r.totalRefundAmount, 0);
     const netSalesValue = totalSalesValue - totalReturnsValue;
     
-    const totalProfitFromSales = currentSales.reduce((sum, s) => sum + (Number(s.profit) || 0), 0);
-    const profitLostOnReturns = currentReturns.flatMap(r => r.items).reduce((sum, item) => sum + ((Number(item.unitPrice) || 0) - (Number(item.unitPurchasePrice) || 0)) * (Number(item.quantity) || 0), 0);
+    // FIX: Ensured profit calculations are robust by safely converting potential non-numeric values. This resolves the error on the following line.
+    const totalProfitFromSales = currentSales.reduce((sum, s) => sum + (Number(s.profit || 0)), 0);
+    const profitLostOnReturns = currentReturns.flatMap(r => r.items).reduce((sum, item) => sum + ((Number(item.unitPrice || 0) - Number(item.unitPurchasePrice || 0)) * (Number(item.quantity) || 0)), 0);
     const netProfit = totalProfitFromSales - profitLostOnReturns;
 
     const productSalesCount = currentSales.flatMap(s => s.items).reduce((acc, item) => {
@@ -195,7 +197,7 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
       const totalSalesIncome = salesReport.totalSalesValue;
       const totalReturns = currentReturns.reduce((sum, r) => sum + r.totalRefundAmount, 0);
       const netSales = totalSalesIncome - totalReturns;
-      const totalPurchasesCost = currentPurchases.reduce((sum, p) => sum + (p.unitPurchasePrice * p.quantity), 0);
+      const totalPurchasesCost = currentPurchases.reduce((sum, p) => sum + ((Number(p.unitPurchasePrice) || 0) * (Number(p.quantity) || 0)), 0);
       const totalExpenses = currentExpenses.reduce((sum, e) => sum + e.amount, 0);
       const finalNetProfit = salesReport.netProfit - totalExpenses;
       

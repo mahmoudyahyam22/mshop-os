@@ -166,20 +166,120 @@ DELETE FROM public.roles WHERE name LIKE 'User_legacy_%';
 
 COMMIT;`;
 
-    const SCHEMA_MIGRATION_SQL = `-- This script adds missing columns required by the latest application version.
--- It is safe to run multiple times.
+    const SCHEMA_MIGRATION_SQL = `-- هذا السكربت الشامل يقوم بتحديث قاعدة البيانات لتدعم كافة ميزات التطبيق.
+-- السكربت آمن للتنفيذ عدة مرات.
 
--- Add 'is_serialized' column to track items with serial numbers (like phones).
-ALTER TABLE public.products
-ADD COLUMN IF NOT EXISTS is_serialized BOOLEAN NOT NULL DEFAULT false;
+BEGIN;
 
--- Add 'national_id' column to store customer's national ID, important for installments.
-ALTER TABLE public.customers
-ADD COLUMN IF NOT EXISTS national_id TEXT;
+-- ===== الخطوة 1: إضافة الأعمدة الناقصة للجداول الحالية =====
 
--- Add 'contact_person' column for better supplier management.
-ALTER TABLE public.suppliers
-ADD COLUMN IF NOT EXISTS contact_person TEXT;
+-- إضافة عمود لتحديد ما إذا كان المنتج يتطلب رقمًا تسلسليًا
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS is_serialized BOOLEAN NOT NULL DEFAULT false;
+
+-- إضافة عمود الرقم القومي للعملاء، وهو مهم للأقساط
+ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS national_id TEXT;
+
+-- إضافة عمود لجهة الاتصال للموردين
+ALTER TABLE public.suppliers ADD COLUMN IF NOT EXISTS contact_person TEXT;
+
+-- إضافة عمود الرقم التسلسلي لعناصر فواتير البيع
+ALTER TABLE public.sale_items ADD COLUMN IF NOT EXISTS serial_number TEXT;
+
+-- إضافة عمود الرقم التسلسلي لعناصر فواتير المرتجعات
+ALTER TABLE public.sales_return_items ADD COLUMN IF NOT EXISTS serial_number TEXT;
+
+-- إضافة أعمدة بيانات الضامن لخطط الأقساط
+ALTER TABLE public.installment_plans ADD COLUMN IF NOT EXISTS guarantor_name TEXT;
+ALTER TABLE public.installment_plans ADD COLUMN IF NOT EXISTS guarantor_phone TEXT;
+ALTER TABLE public.installment_plans ADD COLUMN IF NOT EXISTS guarantor_address TEXT;
+ALTER TABLE public.installment_plans ADD COLUMN IF NOT EXISTS guarantor_national_id TEXT;
+
+-- ===== الخطوة 2: إنشاء جدول جديد لتتبع القطع ذات الأرقام التسلسلية =====
+
+-- إنشاء جدول لتخزين كل قطعة فريدة من منتج له رقم تسلسلي
+CREATE TABLE IF NOT EXISTS public.product_instances (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+    serial_number TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('in_stock', 'sold', 'returned')),
+    purchase_id UUID REFERENCES public.purchases(id) ON DELETE SET NULL,
+    sale_id UUID REFERENCES public.sales(id) ON DELETE SET NULL,
+    return_id UUID REFERENCES public.sales_returns(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+
+-- إنشاء فهارس لتحسين أداء البحث
+CREATE INDEX IF NOT EXISTS idx_product_instances_product_id ON public.product_instances(product_id);
+CREATE INDEX IF NOT EXISTS idx_product_instances_status ON public.product_instances(status);
+
+
+-- ===== الخطوة 3: إنشاء دالة ذكية لإدارة عمليات الشراء =====
+
+-- هذه الدالة تعالج عملية الشراء بشكل آمن وتحديث المخزون والخزنة تلقائيًا
+CREATE OR REPLACE FUNCTION public.add_purchase_transaction(
+    p_product_id uuid,
+    p_quantity integer,
+    p_unit_price numeric,
+    p_supplier_id uuid DEFAULT NULL,
+    p_serial_numbers text[] DEFAULT ARRAY[]::text[]
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_purchase_id uuid;
+    v_is_serialized boolean;
+    v_serial text;
+    v_total_cost numeric;
+    v_product_name text;
+BEGIN
+    -- 1. التحقق من نوع المنتج (عادي أم تسلسلي)
+    SELECT is_serialized, name INTO v_is_serialized, v_product_name FROM public.products WHERE id = p_product_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Product with ID % not found', p_product_id;
+    END IF;
+
+    -- 2. التحقق من تطابق كمية الأرقام التسلسلية مع الكمية المشتراة
+    IF v_is_serialized AND array_length(p_serial_numbers, 1) IS DISTINCT FROM p_quantity THEN
+        RAISE EXCEPTION 'عدد الأرقام التسلسلية (%) لا يطابق الكمية (%) للمنتج ذي الرقم التسلسلي.', array_length(p_serial_numbers, 1), p_quantity;
+    END IF;
+
+    -- 3. تسجيل عملية الشراء في جدول المشتريات
+    INSERT INTO public.purchases (product_id, quantity, unit_purchase_price, supplier_id, date)
+    VALUES (p_product_id, p_quantity, p_unit_price, p_supplier_id, now())
+    RETURNING id INTO v_purchase_id;
+
+    -- 4. تحديث المخزون حسب نوع المنتج
+    IF v_is_serialized THEN
+        -- للمنتجات التسلسلية، يتم إنشاء سجل لكل قطعة في جدول product_instances
+        FOREACH v_serial IN ARRAY p_serial_numbers LOOP
+            INSERT INTO public.product_instances (product_id, serial_number, status, purchase_id)
+            VALUES (p_product_id, v_serial, 'in_stock', v_purchase_id);
+        END LOOP;
+    ELSE
+        -- للمنتجات العادية، يتم زيادة الكمية في المخزون الرئيسي
+        UPDATE public.products
+        SET stock = stock + p_quantity
+        WHERE id = p_product_id;
+    END IF;
+
+    -- 5. تسجيل حركة سحب من الخزنة بقيمة المشتريات
+    v_total_cost := p_quantity * p_unit_price;
+    IF v_total_cost > 0 THEN
+        INSERT INTO public.treasury_transactions (type, amount, description, related_id, balance_after, date)
+        SELECT
+            'withdrawal',
+            v_total_cost,
+            'شراء ' || p_quantity || ' من ' || v_product_name,
+            v_purchase_id,
+            (COALESCE((SELECT balance_after FROM public.treasury_transactions ORDER BY date DESC, id DESC LIMIT 1), 0) - v_total_cost),
+            now();
+    END IF;
+END;
+$$;
+
+COMMIT;
 `;
 
     // System health check on startup

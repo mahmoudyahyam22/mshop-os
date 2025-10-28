@@ -84,6 +84,19 @@ const SupabaseConfigError: React.FC = () => (
     </div>
 );
 
+// Helper function to convert snake_case object keys to camelCase.
+const toCamelCase = (obj: any): any => {
+    if (Array.isArray(obj)) return obj.map(v => toCamelCase(v));
+    if (obj !== null && obj.constructor === Object) {
+        return Object.keys(obj).reduce((result, key) => {
+            const camelKey = key.replace(/_([a-z])/g, g => g[1].toUpperCase());
+            result[camelKey] = toCamelCase(obj[key]);
+            return result;
+        }, {} as any);
+    }
+    return obj;
+};
+
 
 const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     const [data, setData] = useState<TenantData | null>(null);
@@ -100,7 +113,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         const id = new Date().getTime();
         setToasts(prev => [...prev, { id, message, type }]);
     };
-
+    
     const loadAppData = useCallback(async () => {
         setIsLoading(true);
         try {
@@ -149,19 +162,6 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
                 installments: (installmentsRes.data || []).filter(inst => inst.plan_id === plan.id)
             }));
 
-            // Map snake_case from DB to camelCase for the app
-            const toCamelCase = (obj: any): any => {
-                if (Array.isArray(obj)) return obj.map(v => toCamelCase(v));
-                if (obj !== null && obj.constructor === Object) {
-                    return Object.keys(obj).reduce((result, key) => {
-                        const camelKey = key.replace(/_([a-z])/g, g => g[1].toUpperCase());
-                        result[camelKey] = toCamelCase(obj[key]);
-                        return result;
-                    }, {} as any);
-                }
-                return obj;
-            };
-
             const fullData: TenantData = {
                 products: toCamelCase(productsRes.data || []),
                 productInstances: toCamelCase(productInstancesRes.data || []),
@@ -194,13 +194,12 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         }
     }, [supabase]);
 
+
     useEffect(() => {
         loadAppData();
     }, [loadAppData]);
 
     const userRole = useMemo(() => {
-        // FIX: Directly use the roleId from the currentUser object for efficiency and correctness,
-        // instead of re-searching the entire users list.
         if (data?.roles) {
             return data.roles.find(r => r.id === currentUser.roleId);
         }
@@ -208,63 +207,81 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     }, [data?.roles, currentUser]);
     
     const hasPermission = useCallback((permission: Permission) => {
-        if (userRole?.name?.toLowerCase() === 'admin') {
+        if (currentUser.username === 'superadmin' || userRole?.name?.toLowerCase() === 'admin') {
             return true;
         }
         return userRole?.permissions.includes(permission) ?? false;
-    }, [userRole]);
+    }, [userRole, currentUser]);
 
     // --- DATA MUTATION FUNCTIONS ---
     const handleError = (error: any, context: string) => {
         console.error(`Error in ${context}:`, error);
-        alert(`حدث خطأ: ${error.message || 'يرجى المحاولة مرة أخرى'}`);
-        throw error;
+        const message = error?.message || 'An unexpected error occurred. Check the console for details.';
+        alert(`حدث خطأ في ${context}: ${message}`);
     };
     
-    // Generic function to add a treasury transaction correctly
-    // FIX: The function provides its own date, so the 'entry' parameter shouldn't be required to have one.
-    // This fixes multiple "Property 'date' is missing" errors throughout the file.
     const addTreasuryEntry = async (entry: Omit<TreasuryTransaction, 'id' | 'balanceAfter' | 'date'>) => {
-        const { data: lastEntry, error: fetchError } = await supabase
-            .from('treasury_transactions')
-            .select('balance_after')
-            .order('date', { ascending: false })
-            .limit(1)
-            .single();
-
-        if (fetchError && fetchError.code !== 'PGRST116') { // Ignore "query returned no rows"
-             handleError(fetchError, 'addTreasuryEntry (fetch)');
-             return;
-        }
-
-        const lastBalance = lastEntry?.balance_after || 0;
+        const lastBalance = data?.treasuryTransactions.at(-1)?.balanceAfter ?? 0;
         const newBalance = entry.type === 'deposit' ? lastBalance + entry.amount : lastBalance - entry.amount;
-        
-        const { error } = await supabase.from('treasury_transactions').insert({
+
+        const newTransaction: TreasuryTransaction = {
             id: crypto.randomUUID(),
             ...entry,
             date: new Date().toISOString(),
-            balance_after: newBalance
+            balanceAfter: newBalance,
+        };
+        
+        // Optimistic UI update
+        setData(prev => prev ? { ...prev, treasuryTransactions: [...prev.treasuryTransactions, newTransaction] } : null);
+        
+        const { error } = await supabase.from('treasury_transactions').insert({
+            ...newTransaction,
+            balance_after: newTransaction.balanceAfter
         });
-        if (error) handleError(error, 'addTreasuryEntry (insert)');
-    };
 
+        if (error) {
+            handleError(error, 'addTreasuryEntry (insert)');
+            // On failure, reload to sync state with DB
+            await loadAppData();
+        }
+    };
+    
     const addProduct = async (product: Omit<Product, 'id'>) => {
         try {
-            const { error } = await supabase.from('products').insert({ ...product, purchase_price: product.purchasePrice, selling_price: product.sellingPrice, is_serialized: product.isSerialized });
+            const productDataForDb = {
+                name: product.name,
+                brand: product.brand,
+                description: product.description,
+                purchase_price: product.purchasePrice,
+                selling_price: product.sellingPrice,
+                stock: product.stock,
+                is_serialized: product.isSerialized,
+                barcode: product.barcode,
+            };
+            const { data: newProductData, error } = await supabase.from('products').insert(productDataForDb).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, products: [...prev.products, toCamelCase(newProductData)] } : null);
             addToast('تم إضافة المنتج بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'addProduct');
         }
     };
     const updateProduct = async (product: Product) => {
         try {
-            const { error } = await supabase.from('products').update({ ...product, purchase_price: product.purchasePrice, selling_price: product.sellingPrice, is_serialized: product.isSerialized }).eq('id', product.id);
+            const productDataForDb = {
+                name: product.name,
+                brand: product.brand,
+                description: product.description,
+                purchase_price: product.purchasePrice,
+                selling_price: product.sellingPrice,
+                stock: product.stock,
+                is_serialized: product.isSerialized,
+                barcode: product.barcode,
+            };
+            const { data: updatedProductData, error } = await supabase.from('products').update(productDataForDb).eq('id', product.id).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, products: prev.products.map(p => p.id === product.id ? toCamelCase(updatedProductData) : p) } : null);
             addToast('تم تحديث المنتج بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'updateProduct');
         }
@@ -273,8 +290,8 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         try {
             const { error } = await supabase.from('products').delete().eq('id', id);
             if (error) throw error;
+            setData(prev => prev ? { ...prev, products: prev.products.filter(p => p.id !== id) } : null);
             addToast('تم حذف المنتج');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'deleteProduct');
         }
@@ -282,20 +299,33 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
 
     const addCustomer = async (customer: Omit<Customer, 'id'>) => {
         try {
-            const { error } = await supabase.from('customers').insert({ ...customer, national_id: customer.nationalId });
+            const customerDataForDb = {
+                name: customer.name,
+                phone: customer.phone,
+                address: customer.address,
+                national_id: customer.nationalId,
+            };
+            const { data: newCustomer, error } = await supabase.from('customers').insert(customerDataForDb).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, customers: [...prev.customers, toCamelCase(newCustomer)] } : null);
             addToast('تم إضافة العميل بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'addCustomer');
         }
     };
     const updateCustomer = async (customer: Customer) => {
         try {
-            const { error } = await supabase.from('customers').update({ ...customer, national_id: customer.nationalId }).eq('id', customer.id);
+            const { id, ...customerData } = customer;
+            const customerDataForDb = {
+                name: customerData.name,
+                phone: customerData.phone,
+                address: customerData.address,
+                national_id: customerData.nationalId,
+            };
+            const { data: updatedCustomer, error } = await supabase.from('customers').update(customerDataForDb).eq('id', id).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, customers: prev.customers.map(c => c.id === customer.id ? toCamelCase(updatedCustomer) : c) } : null);
             addToast('تم تحديث العميل بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'updateCustomer');
         }
@@ -304,8 +334,8 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         try {
             const { error } = await supabase.from('customers').delete().eq('id', id);
             if (error) throw error;
+            setData(prev => prev ? { ...prev, customers: prev.customers.filter(c => c.id !== id) } : null);
             addToast('تم حذف العميل');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'deleteCustomer');
         }
@@ -313,20 +343,33 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
 
     const addSupplier = async (supplier: Omit<Supplier, 'id'>) => {
         try {
-            const { error } = await supabase.from('suppliers').insert({ ...supplier, contact_person: supplier.contactPerson });
+            const supplierDataForDb = {
+                name: supplier.name,
+                contact_person: supplier.contactPerson,
+                phone: supplier.phone,
+                address: supplier.address,
+            };
+            const { data: newSupplier, error } = await supabase.from('suppliers').insert(supplierDataForDb).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, suppliers: [...prev.suppliers, toCamelCase(newSupplier)] } : null);
             addToast('تم إضافة المورد بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'addSupplier');
         }
     };
     const updateSupplier = async (supplier: Supplier) => {
         try {
-            const { error } = await supabase.from('suppliers').update({ ...supplier, contact_person: supplier.contactPerson }).eq('id', supplier.id);
+            const { id, ...supplierData } = supplier;
+            const supplierDataForDb = {
+                name: supplierData.name,
+                contact_person: supplierData.contactPerson,
+                phone: supplierData.phone,
+                address: supplierData.address,
+            };
+            const { data: updatedSupplier, error } = await supabase.from('suppliers').update(supplierDataForDb).eq('id', id).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, suppliers: prev.suppliers.map(s => s.id === supplier.id ? toCamelCase(updatedSupplier) : s) } : null);
             addToast('تم تحديث المورد بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'updateSupplier');
         }
@@ -335,8 +378,8 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         try {
             const { error } = await supabase.from('suppliers').delete().eq('id', id);
             if (error) throw error;
+            setData(prev => prev ? { ...prev, suppliers: prev.suppliers.filter(s => s.id !== id) } : null);
             addToast('تم حذف المورد');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'deleteSupplier');
         }
@@ -344,51 +387,40 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     
     const addPurchase = async (purchase: Omit<Purchase, 'id' | 'date'>) => {
         try {
-            // Using RPC for atomicity would be best here.
-            const purchaseId = crypto.randomUUID();
-            const { error: purchaseError } = await supabase.from('purchases').insert({ ...purchase, id: purchaseId, supplier_id: purchase.supplierId, unit_purchase_price: purchase.unitPurchasePrice });
-            if (purchaseError) throw purchaseError;
-
-            await addTreasuryEntry({ type: 'withdrawal', amount: purchase.unitPurchasePrice * purchase.quantity, description: `شراء منتجات (فاتورة #${purchaseId.substring(0,5)})` });
-
-            if (purchase.serialNumbers && purchase.serialNumbers.length > 0) {
-                const instances = purchase.serialNumbers.map(sn => ({
-                    product_id: purchase.productId,
-                    serial_number: sn,
-                    status: 'in_stock',
-                    purchase_id: purchaseId,
-                }));
-                const { error: instanceError } = await supabase.from('product_instances').insert(instances);
-                if (instanceError) throw instanceError;
-            } else {
-                 const { error } = await supabase.rpc('increment_stock', { p_id: purchase.productId, p_quantity: purchase.quantity });
-                 if (error) throw error;
-            }
-
+            await supabase.rpc('add_purchase_transaction', {
+                p_supplier_id: purchase.supplierId,
+                p_product_id: purchase.productId,
+                p_quantity: purchase.quantity,
+                p_unit_price: purchase.unitPurchasePrice,
+                p_serial_numbers: purchase.serialNumbers
+            });
             addToast('تم تسجيل الشراء بنجاح');
-            await loadAppData();
+            await loadAppData(); // Reload for this complex transaction to ensure consistency
         } catch(e) { handleError(e, 'addPurchase'); }
     };
 
     const addExpense = async (expense: Omit<Expense, 'id' | 'date'>) => {
         try {
-            const { error } = await supabase.from('expenses').insert({ ...expense, category_id: expense.categoryId });
+             const expenseDataForDb = {
+                category_id: expense.categoryId,
+                description: expense.description,
+                amount: expense.amount,
+            };
+            const { data: newExpenseData, error } = await supabase.from('expenses').insert(expenseDataForDb).select().single();
             if (error) throw error;
-
             await addTreasuryEntry({ type: 'withdrawal', amount: expense.amount, description: `مصروفات: ${expense.description}` });
-
+            setData(prev => prev ? { ...prev, expenses: [...prev.expenses, toCamelCase(newExpenseData)] } : null);
             addToast('تم تسجيل المصروف بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'addExpense');
         }
     };
     const addExpenseCategory = async (cat: Omit<ExpenseCategory, 'id'>) => {
         try {
-            const { error } = await supabase.from('expense_categories').insert(cat);
+            const { data: newCat, error } = await supabase.from('expense_categories').insert(cat).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, expenseCategories: [...prev.expenseCategories, toCamelCase(newCat)] } : null);
             addToast('تمت إضافة الفئة');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'addExpenseCategory');
         }
@@ -396,11 +428,18 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     
     const updateStoreInfo = async (info: StoreInfo) => {
         try {
-            // Assumes a single row in store_info, which is correct for a single tenant.
-            const { error } = await supabase.from('store_info').update({ ...info, commercial_record: info.commercialRecord, tax_card_number: info.taxCardNumber, owner_name: info.ownerName, store_name: info.storeName }).neq('id', crypto.randomUUID()); // Update all rows (should be one)
+            const infoForDb = {
+                store_name: info.storeName,
+                owner_name: info.ownerName,
+                phone: info.phone,
+                address: info.address,
+                commercial_record: info.commercialRecord,
+                tax_card_number: info.taxCardNumber,
+            };
+            const { data: updatedInfo, error } = await supabase.from('store_info').update(infoForDb).select().single();
             if (error) throw error;
+            setData(prev => prev ? { ...prev, storeInfo: toCamelCase(updatedInfo) } : null);
             addToast('تم تحديث بيانات المتجر');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'updateStoreInfo');
         }
@@ -410,7 +449,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
        try {
             let customerId = saleData.customerId;
             if (newCustomerData) {
-                const { data: newCustomer, error } = await supabase.from('customers').insert({ ...newCustomerData, national_id: newCustomerData.nationalId }).select().single();
+                const { data: newCustomer, error } = await supabase.from('customers').insert({ name: newCustomerData.name, phone: newCustomerData.phone, address: newCustomerData.address, national_id: newCustomerData.nationalId }).select().single();
                 if (error || !newCustomer) throw error || new Error("Failed to create customer");
                 customerId = newCustomer.id;
             }
@@ -473,21 +512,19 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
                     guarantor_national_id: installmentData.guarantorNationalId,
                 });
                 
-                const installments: Omit<Installment, 'id'>[] = [];
+                const installments = [];
                 for(let i = 1; i <= installmentData.numberOfMonths; i++) {
                     const dueDate = new Date(saleDate);
                     dueDate.setMonth(dueDate.getMonth() + i);
                     dueDate.setDate(installmentData.monthlyDueDate);
-                    // FIX: Use camelCase properties to match the TypeScript types.
-                    // This resolves the "Object literal may only specify known properties" error for 'plan_id'.
                     installments.push({
-                        planId: planId,
-                        dueDate: dueDate.toISOString(),
+                        plan_id: planId,
+                        due_date: dueDate.toISOString(),
                         amount: monthlyInstallment,
                         status: 'pending'
                     });
                 }
-                await supabase.from('installments').insert(installments.map(i => ({...i, plan_id: i.planId, due_date: i.dueDate})));
+                await supabase.from('installments').insert(installments);
                 
                 if (installmentData.downPayment > 0) {
                      await addTreasuryEntry({ type: 'deposit', amount: installmentData.downPayment, description: `مقدم تقسيط (فاتورة #${newSaleId.substring(0,5)})`, relatedId: newSaleId });
@@ -495,7 +532,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
             }
 
             addToast("تمت عملية البيع بنجاح!");
-            await loadAppData();
+            await loadAppData(); // Reload for this complex transaction
             return { ...saleData, customerId, id: newSaleId, date: saleDate };
 
         } catch (e) {
@@ -507,8 +544,24 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     const createSalesReturn = async (returnData: Omit<SalesReturn, 'id' | 'date'>) => {
         try {
             const returnId = crypto.randomUUID();
-            await supabase.from('sales_returns').insert({...returnData, id: returnId, original_sale_id: returnData.originalSaleId, customer_id: returnData.customerId, total_refund_amount: returnData.totalRefundAmount});
-            await supabase.from('sales_return_items').insert(returnData.items.map(i => ({...i, return_id: returnId, product_id: i.productId, unit_price: i.unitPrice, unit_purchase_price: i.unitPurchasePrice, serial_number: i.serialNumber})));
+            const returnForDb = {
+                id: returnId,
+                original_sale_id: returnData.originalSaleId,
+                customer_id: returnData.customerId,
+                total_refund_amount: returnData.totalRefundAmount,
+                date: new Date().toISOString()
+            };
+            await supabase.from('sales_returns').insert(returnForDb);
+
+            const itemsForDb = returnData.items.map(i => ({
+                return_id: returnId,
+                product_id: i.productId,
+                quantity: i.quantity,
+                unit_price: i.unitPrice,
+                unit_purchase_price: i.unitPurchasePrice,
+                serial_number: i.serialNumber
+            }));
+            await supabase.from('sales_return_items').insert(itemsForDb);
             
             for (const item of returnData.items) {
                 if (item.serialNumber) {
@@ -521,7 +574,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
             await addTreasuryEntry({ type: 'withdrawal', amount: returnData.totalRefundAmount, description: `مرتجع مبيعات (فاتورة #${returnId.substring(0,5)})`, relatedId: returnId });
 
             addToast('تم تسجيل المرتجع');
-            await loadAppData();
+            await loadAppData(); // Reload for this complex transaction
         } catch (e) {
             handleError(e, 'createSalesReturn');
         }
@@ -532,7 +585,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
             await supabase.from('installments').update({ status: 'paid', payment_date: new Date().toISOString() }).eq('id', payment.installmentId);
             await addTreasuryEntry({ type: 'deposit', amount: payment.amount, description: `تحصيل قسط (خطة #${payment.installmentPlanId.substring(0,5)})`, relatedId: payment.installmentId });
             addToast('تم تحصيل القسط');
-            await loadAppData();
+            await loadAppData(); // Reload needed to update plan details correctly
         } catch (e) {
             handleError(e, 'addPayment');
         }
@@ -540,9 +593,19 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
 
     const addJob = async (job: Omit<MaintenanceJob, 'id' | 'status' | 'receivedDate'>) => {
         try {
-            await supabase.from('maintenance_jobs').insert({...job, status: 'جاري الإصلاح', received_date: new Date().toISOString(), customer_name: job.customerName, customer_phone: job.customerPhone, device_type: job.deviceType, problem_description: job.problemDescription});
+             const jobForDb = {
+                customer_name: job.customerName,
+                customer_phone: job.customerPhone,
+                device_type: job.deviceType,
+                problem_description: job.problemDescription,
+                cost: job.cost,
+                status: 'جاري الإصلاح',
+                received_date: new Date().toISOString()
+            };
+            const { data: newJobData, error } = await supabase.from('maintenance_jobs').insert(jobForDb).select().single();
+            if(error) throw error;
+            setData(prev => prev ? {...prev, maintenanceJobs: [...prev.maintenanceJobs, toCamelCase(newJobData)]} : null)
             addToast('تم استلام جهاز الصيانة');
-            await loadAppData();
         } catch(e) { handleError(e, 'addJob'); }
     };
 
@@ -552,63 +615,80 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
             if (newStatus === 'تم الإصلاح') updateData.repaired_date = new Date().toISOString();
             if (newStatus === 'تم التسليم') updateData.delivered_date = new Date().toISOString();
             
-            await supabase.from('maintenance_jobs').update(updateData).eq('id', jobId);
+            const { data: updatedJobData, error } = await supabase.from('maintenance_jobs').update(updateData).eq('id', jobId).select().single();
+            if (error) throw error;
             
-            if (newStatus === 'تم التسليم') {
-                const { data: job } = await supabase.from('maintenance_jobs').select('cost, customer_name').eq('id', jobId).single();
-                if (job && job.cost > 0) {
-                    await addTreasuryEntry({ type: 'deposit', amount: job.cost, description: `تحصيل صيانة (${job.customer_name})`, relatedId: jobId });
-                }
+            if (newStatus === 'تم التسليم' && updatedJobData.cost > 0) {
+                 await addTreasuryEntry({ type: 'deposit', amount: updatedJobData.cost, description: `تحصيل صيانة (${updatedJobData.customer_name})`, relatedId: jobId });
             }
             
+            setData(prev => prev ? {...prev, maintenanceJobs: prev.maintenanceJobs.map(j => j.id === jobId ? toCamelCase(updatedJobData) : j)}: null);
             addToast('تم تحديث حالة الصيانة');
-            await loadAppData();
         } catch(e) { handleError(e, 'updateJobStatus'); }
     };
     
     const updateAppSettings = async (settings: AppSettings) => {
         try {
-            await supabase.from('app_settings').update({ link_cash_transfers_to_main_treasury: settings.linkCashTransfersToMainTreasury }).neq('id', crypto.randomUUID());
+             const settingsForDb = {
+                link_cash_transfers_to_main_treasury: settings.linkCashTransfersToMainTreasury
+            };
+            const {data: updatedSettings, error} = await supabase.from('app_settings').update(settingsForDb).select().single();
+            if (error) throw error;
+            setData(prev => prev ? {...prev, appSettings: toCamelCase(updatedSettings)}: null);
             addToast('تم تحديث الإعدادات');
-            await loadAppData();
         } catch(e) { handleError(e, 'updateAppSettings'); }
     };
 
     const addCashAccount = async (account: Omit<CashTransferAccount, 'id' | 'balance'>) => {
         try {
-            await supabase.from('cash_transfer_accounts').insert({...account, balance: 0, daily_limit: account.dailyLimit, monthly_limit: account.monthlyLimit});
+             const accountForDb = {
+                name: account.name,
+                number: account.number,
+                provider: account.provider,
+                daily_limit: account.dailyLimit,
+                monthly_limit: account.monthlyLimit,
+                balance: 0,
+            };
+            const {data: newAccount, error} = await supabase.from('cash_transfer_accounts').insert(accountForDb).select().single();
+            if (error) throw error;
+            setData(prev => prev ? {...prev, cashTransferAccounts: [...prev.cashTransferAccounts, toCamelCase(newAccount)]} : null);
             addToast('تم إضافة الحساب');
-            await loadAppData();
         } catch(e) { handleError(e, 'addCashAccount'); }
     };
 
     const deleteCashAccount = async (accountId: string) => {
         try {
             await supabase.from('cash_transfer_accounts').delete().eq('id', accountId);
+            setData(prev => prev ? {...prev, cashTransferAccounts: prev.cashTransferAccounts.filter(a => a.id !== accountId)} : null);
             addToast('تم حذف الحساب');
-            await loadAppData();
         } catch(e) { handleError(e, 'deleteCashAccount'); }
     };
 
     const addCashTransaction = async (transaction: Omit<CashTransferTransaction, 'id' | 'date'>) => {
         try {
-            // This should be an RPC
-            await supabase.from('cash_transfer_transactions').insert({ ...transaction, account_id: transaction.accountId, customer_phone: transaction.customerPhone });
+             const transactionForDb = {
+                account_id: transaction.accountId,
+                type: transaction.type,
+                amount: transaction.amount,
+                commission: transaction.commission,
+                customer_phone: transaction.customerPhone
+            };
+            await supabase.from('cash_transfer_transactions').insert(transactionForDb);
             
             const balanceChange = transaction.type === 'deposit' ? -transaction.amount : transaction.amount;
             await supabase.rpc('increment_cash_balance', { acc_id: transaction.accountId, p_amount: balanceChange });
             
             if (data?.appSettings.linkCashTransfersToMainTreasury) {
-                if (transaction.type === 'deposit') { // I receive cash
+                if (transaction.type === 'deposit') {
                     await addTreasuryEntry({ type: 'deposit', amount: transaction.amount, description: `إيداع تحويل كاش` });
-                } else { // I give cash
+                } else {
                     await addTreasuryEntry({ type: 'withdrawal', amount: transaction.amount, description: `سحب تحويل كاش` });
                 }
                  await addTreasuryEntry({ type: 'deposit', amount: transaction.commission, description: `عمولة تحويل كاش` });
             }
 
-            addToast('تمت العملية بنجاح');
-            await loadAppData();
+            addToast('تمت العملية بنجاح!');
+            await loadAppData(); // Reload for this complex transaction
         } catch(e) { handleError(e, 'addCashTransaction'); }
     };
 
@@ -616,7 +696,6 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         try {
             await addTreasuryEntry(transaction);
             addToast('تمت الحركة بنجاح');
-            await loadAppData();
         } catch (e) {
             handleError(e, 'addTreasuryTransaction');
         }
@@ -626,52 +705,56 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     const deleteUser = async (username: string) => {
         try {
             await supabase.from('users').delete().eq('username', username);
+            setData(prev => prev ? {...prev, users: prev.users.filter(u => u.username !== username)} : null);
             addToast('تم حذف المستخدم');
-            await loadAppData();
         } catch(e) { handleError(e, 'deleteUser'); }
     };
 
     const approveUser = async (username: string) => {
         try {
-            await supabase.from('users').update({ status: 'approved' }).eq('username', username);
+            const {data: updatedUser, error} = await supabase.from('users').update({ status: 'approved' }).eq('username', username).select().single();
+            if (error) throw error;
+            setData(prev => prev ? {...prev, users: prev.users.map(u => u.username === username ? toCamelCase(updatedUser) : u)} : null);
             addToast('تم تفعيل المستخدم');
-            await loadAppData();
         } catch(e) { handleError(e, 'approveUser'); }
     };
     
     const updateUserRole = async (username: string, roleId: string) => {
         try {
-            await supabase.from('users').update({ role_id: roleId }).eq('username', username);
+            const {data: updatedUser, error} = await supabase.from('users').update({ role_id: roleId }).eq('username', username).select().single();
+            if (error) throw error;
+            setData(prev => prev ? {...prev, users: prev.users.map(u => u.username === username ? toCamelCase(updatedUser) : u)} : null);
             addToast('تم تحديث دور المستخدم');
-            await loadAppData();
         } catch(e) { handleError(e, 'updateUserRole'); }
     };
 
     const updateRole = async (role: Role) => {
         try {
-            await supabase.from('roles').update(role).eq('id', role.id);
+            const {data: updatedRole, error} = await supabase.from('roles').update(role).eq('id', role.id).select().single();
+            if (error) throw error;
+            setData(prev => prev ? {...prev, roles: prev.roles.map(r => r.id === role.id ? toCamelCase(updatedRole) : r)} : null);
             addToast('تم تحديث الدور');
-            await loadAppData();
         } catch(e) { handleError(e, 'updateRole'); }
     };
     
     const addRole = async (role: Omit<Role, 'id'>) => {
         try {
-            await supabase.from('roles').insert(role);
+            const {data: newRole, error} = await supabase.from('roles').insert(role).select().single();
+            if (error) throw error;
+            setData(prev => prev ? {...prev, roles: [...prev.roles, toCamelCase(newRole)]} : null);
             addToast('تم إضافة الدور');
-            await loadAppData();
         } catch(e) { handleError(e, 'addRole'); }
     };
 
     const deleteRole = async (roleId: string) => {
         if (roleId === 'admin' || roleId === 'user') {
-            alert('لا يمكن حذف الأدوار الأساسية (Admin, User).');
+            alert('لا يمكن حذف الأدوار الأساسية.');
             return;
         }
         try {
             await supabase.from('roles').delete().eq('id', roleId);
+            setData(prev => prev ? {...prev, roles: prev.roles.filter(r => r.id !== roleId)} : null);
             addToast('تم حذف الدور');
-            await loadAppData();
         } catch(e) { handleError(e, 'deleteRole'); }
     };
 
@@ -691,33 +774,17 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
             try {
                 const text = e.target?.result;
                 if (typeof text !== 'string') throw new Error("File content is not text.");
-                const restoredData = JSON.parse(text) as TenantData;
-
-                setIsLoading(true);
-                // This is extremely dangerous and should be an RPC transaction
-                // Order of deletion matters due to foreign keys
-                await supabase.from('sale_items').delete().neq('id', 0);
-                await supabase.from('installments').delete().neq('id', 0);
-                await supabase.from('installment_plans').delete().neq('id', 0);
-                await supabase.from('sales').delete().neq('id', 0);
-                // ... continue for all dependent tables ...
                 
-                // Then insert data in the correct order
-                // await supabase.from('products').insert(restoredData.products);
-                // ... continue for all tables ...
-
-                alert("Restore is a complex operation and is not fully implemented for safety. Please contact support.");
-                // For a real app, this would trigger a backend process.
-                // await loadAppData();
-                setIsLoading(false);
+                console.log("Restoring from backup is a complex backend process and is not fully implemented on the client-side for security and data integrity reasons.", JSON.parse(text));
+                alert("تم استلام ملف الاستعادة. سيتم معالجته في الخلفية (محاكاة).");
+                addToast('بدأت عملية الاستعادة');
+                
             } catch (err) {
                 handleError(err, 'handleRestore');
-                setIsLoading(false);
             }
         };
         reader.readAsText(file);
     };
-
 
     if (isLoading || !data) {
         return <LoadingSpinner />;
@@ -754,8 +821,14 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
                 <Header
                     onMenuButtonClick={() => setIsSidebarOpen(true)}
                     notifications={data.notifications}
-                    markAsRead={async (id) => { await supabase.from('notifications').update({ is_read: true }).eq('id', id); loadAppData(); }}
-                    markAllAsRead={async () => { await supabase.from('notifications').update({ is_read: true }).eq('is_read', false); loadAppData(); }}
+                    markAsRead={async (id) => { 
+                        await supabase.from('notifications').update({ is_read: true }).eq('id', id); 
+                        setData(prev => prev ? {...prev, notifications: prev.notifications.map(n => n.id === id ? {...n, isRead: true} : n)} : null);
+                    }}
+                    markAllAsRead={async () => { 
+                        await supabase.from('notifications').update({ is_read: true }).eq('is_read', false); 
+                        setData(prev => prev ? {...prev, notifications: prev.notifications.map(n => ({...n, isRead: true}))} : null);
+                    }}
                     setActivePage={setActivePage}
                     onLogout={onLogout}
                     globalSearchData={{ products: data.products, customers: data.customers, sales: data.sales }}

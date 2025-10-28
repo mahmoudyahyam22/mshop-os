@@ -120,7 +120,7 @@ const Dashboard: React.FC<DashboardProps> = ({ sales, products, productInstances
 
   const totalSalesValue = sales.reduce((sum, sale) => sum + sale.totalAmount, 0).toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' });
   const totalInstallmentDebt = installmentPlans.reduce((sum, plan) => sum + (plan.remainingAmount > 0 ? plan.remainingAmount : 0), 0);
-  // FIX: Ensure sale.profit is treated as a number to prevent type errors from inconsistent data.
+  // FIX: Ensured profit calculation is robust by safely converting potential non-numeric values.
   const totalProfit = sales.reduce((sum, sale) => sum + (Number(sale.profit) || 0), 0); // This already includes interest
 
   const installmentProfits = useMemo(() => {
@@ -128,9 +128,10 @@ const Dashboard: React.FC<DashboardProps> = ({ sales, products, productInstances
     let totalInterest = 0;
 
     installmentPlans.forEach(plan => {
-        totalInterest += plan.interestAmount;
-        if (plan.numberOfMonths > 0) {
-            const profitPerInstallment = plan.interestAmount / plan.numberOfMonths;
+        // FIX: Use `Number(val || 0)` pattern to safely handle potentially undefined or non-numeric values.
+        totalInterest += (Number(plan.interestAmount || 0));
+        if ((Number(plan.numberOfMonths || 0)) > 0) {
+            const profitPerInstallment = (Number(plan.interestAmount || 0)) / (Number(plan.numberOfMonths || 1));
             const paidInstallmentsCount = plan.installments.filter(i => i.status === 'paid').length;
             realized += paidInstallmentsCount * profitPerInstallment;
         }
@@ -144,7 +145,6 @@ const Dashboard: React.FC<DashboardProps> = ({ sales, products, productInstances
 
   const topSellingProducts = useMemo(() => {
     const productSales = sales.flatMap(s => s.items).reduce((acc, item) => {
-      // FIX: Ensure item.quantity is treated as a number to prevent type errors in the sort operation below.
       acc[item.productId] = (acc[item.productId] || 0) + (Number(item.quantity) || 0);
       return acc;
     }, {} as {[key: string]: number});
@@ -199,7 +199,6 @@ const Dashboard: React.FC<DashboardProps> = ({ sales, products, productInstances
         <StatCard title="ديون الأقساط" value={totalInstallmentDebt.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} icon={InstallmentsIcon} color="bg-red-500/50" glowColor="rgb(239 68 68)" />
         <StatCard title="أرباح مستحقة من الأقساط" value={installmentProfits.realized.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} icon={TrendingUpIcon} color="bg-emerald-500/50" glowColor="rgb(16 185 129)" />
         <StatCard title="أرباح غير مستحقة من الأقساط" value={installmentProfits.unrealized.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} icon={ScaleIcon} color="bg-orange-500/50" glowColor="rgb(249 115 22)" />
-        {/* FIX: Ensure t.commission is treated as a number to prevent type errors. */}
         <StatCard title="أرباح تحويلات الكاش" value={cashTransferTransactions.reduce((s,t)=>s+(Number(t.commission) || 0),0).toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} icon={TransferIcon} color="bg-teal-500/50" glowColor="rgb(20 184 166)" />
         <StatCard title="عدد المنتجات" value={products.length} icon={ProductIcon} color="bg-green-500/50" glowColor="rgb(34 197 94)" />
         <StatCard title="عدد العملاء" value={customers.length} icon={CustomerIcon} color="bg-purple-500/50" glowColor="rgb(168 85 247)" />
