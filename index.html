@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>برنامج إدارة محل هواتف</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Chart.js for data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    
+    <!-- jsPDF and html2canvas for PDF export functionality -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <style>
+      :root {
+        --bg-dark-primary: #0a0a1a;
+        --bg-glass: rgba(10, 10, 30, 0.5);
+        --border-glow: rgba(0, 255, 255, 0.2);
+        --text-primary: #e0e0ff;
+        --text-secondary: #a0a0c0;
+        --accent-cyan: #00ffff;
+        --accent-purple: #8A2BE2;
+        --accent-glow: #00ffff;
+      }
+      body {
+        font-family: 'Cairo', sans-serif;
+        background: linear-gradient(135deg, #0d1127 0%, #0a0a1a 100%);
+        color: var(--text-primary);
+        scrollbar-width: thin;
+        scrollbar-color: var(--accent-cyan) var(--bg-dark-primary);
+      }
+      /* Webkit Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: var(--bg-dark-primary);
+      }
+      ::-webkit-scrollbar-thumb {
+        background-color: var(--accent-cyan);
+        border-radius: 10px;
+        border: 2px solid var(--bg-dark-primary);
+      }
+
+      /* Glassmorphism Effect */
+      .glass-card {
+        background: var(--bg-glass);
+        backdrop-filter: blur(10px);
+        border: 1px solid var(--border-glow);
+        box-shadow: 0 0 20px rgba(0, 255, 255, 0.1);
+      }
+
+      /* Futuristic Inputs */
+      .form-input-futuristic {
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid var(--border-glow);
+        color: var(--text-primary);
+        padding: 0.5rem 0.2rem;
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      }
+      .form-input-futuristic:focus {
+        outline: none;
+        border-color: var(--accent-cyan);
+        box-shadow: 0 2px 10px rgba(0, 255, 255, 0.3);
+      }
+      
+      select.form-input-futuristic {
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        appearance: none;
+        background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%2300FFFF%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22/%3E%3C/svg%3E');
+        background-repeat: no-repeat;
+        background-position: left 0.5rem center;
+        background-size: .65em auto;
+        padding-left: 2rem;
+      }
+
+      /* Animations */
+      @keyframes fadeInUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .animate-fadeInUp {
+        animation: fadeInUp 0.5s ease-out forwards;
+      }
+      
+      @keyframes pulse-glow {
+        0%, 100% {
+          box-shadow: 0 0 5px var(--accent-glow), 0 0 10px var(--accent-glow);
+        }
+        50% {
+          box-shadow: 0 0 20px var(--accent-glow), 0 0 30px var(--accent-glow);
+        }
+      }
+      .animate-pulse-glow {
+        animation: pulse-glow 2s infinite;
+      }
+      
+       @keyframes modal-pop-in {
+        from {
+          opacity: 0;
+          transform: scale(0.9);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+      .animate-modal-pop-in {
+        animation: modal-pop-in 0.3s ease-out forwards;
+      }
+      
+      /* Print styles */
+      @media print {
+        body, .printable-invoice {
+          background: #fff !important;
+          color: #000 !important;
+        }
+        .printable-invoice * {
+            color: #000 !important;
+        }
+        .no-print {
+          display: none !important;
+        }
+        .printable-invoice {
+            box-shadow: none;
+            border: 1px solid #ccc;
+        }
+      }
+
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0",
+    "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm"
+  }
+}
+</script>
+</head>
+  <body class="">
+    <div id="root"></div>
+    <div id="modal-root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
