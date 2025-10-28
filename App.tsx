@@ -49,6 +49,47 @@ const App: React.FC = () => {
     const [isAuthenticated, setIsAuthenticated] = useLocalStorage<boolean>('mshop_isAuthenticated', false);
     const [currentUser, setCurrentUser] = useLocalStorage<User | null>('mshop_currentUser', null);
     
+    // This effect runs once on startup to ensure essential data like roles exists.
+    useEffect(() => {
+        const seedInitialData = async () => {
+            if (!supabase) return;
+            try {
+                // Check if roles table is empty
+                const { count, error: countError } = await supabase.from('roles').select('*', { count: 'exact', head: true });
+                if (countError) throw countError;
+
+                if (count === 0) {
+                    console.log("Roles table is empty. Seeding initial roles...");
+                    const { error } = await supabase.from('roles').insert([
+                        {
+                            id: 'r1',
+                            name: 'Admin',
+                            permissions: [
+                                "view_dashboard", "manage_products", "view_purchase_price", "perform_sales", "manage_purchases", "manage_installments", "manage_customers", "manage_maintenance", "manage_treasury", "manage_cash_transfers", "manage_expenses", "view_reports", "manage_store_info", "manage_users", "manage_roles", "manage_suppliers", "manage_returns", "perform_backup_restore"
+                            ]
+                        },
+                        {
+                            id: 'r2',
+                            name: 'User',
+                            permissions: [
+                                "view_dashboard", "manage_products", "perform_sales", "manage_purchases", "manage_installments", "manage_customers", "manage_maintenance", "manage_treasury", "manage_cash_transfers", "manage_expenses", "manage_suppliers", "manage_returns"
+                            ]
+                        }
+                    ]);
+                    if (error) {
+                        console.error('Error seeding roles:', error);
+                    } else {
+                        console.log("Successfully seeded initial roles.");
+                    }
+                }
+            } catch (error) {
+                console.error("Failed to check or seed initial data:", error);
+            }
+        };
+
+        seedInitialData();
+    }, []);
+
     // --- AUTHENTICATION for the entire platform using Supabase ---
     const handleLogin = async (username: string, password: string): Promise<{ success: boolean, message: string }> => {
         if (!supabase) return { success: false, message: 'Database connection not configured.' };
