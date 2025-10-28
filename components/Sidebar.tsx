@@ -38,14 +38,14 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, setActivePage, isOpen, se
   };
 
   return (
-    <aside className={`fixed top-0 right-0 h-full w-64 glass-card text-white shadow-lg transform transition-transform duration-300 ease-in-out z-50 ${isOpen ? 'translate-x-0' : 'translate-x-full'} lg:translate-x-0 lg:shadow-none no-print`}>
-        <div className="p-4 flex justify-between items-center border-b border-[var(--border-glow)]">
+    <aside className={`fixed top-0 right-0 h-full w-64 glass-card text-white shadow-lg transform transition-transform duration-300 ease-in-out z-50 ${isOpen ? 'translate-x-0' : 'translate-x-full'} lg:translate-x-0 lg:shadow-none no-print flex flex-col`}>
+        <div className="p-4 flex justify-between items-center border-b border-[var(--border-glow)] flex-shrink-0">
              <h1 className="text-2xl font-bold text-center text-[var(--accent-cyan)] drop-shadow-[0_0_5px_var(--accent-cyan)]">M-SHOP OS</h1>
              <button onClick={() => setIsOpen(false)} className="lg:hidden text-[var(--text-secondary)] hover:text-white">
                  <XIcon className="w-6 h-6" />
              </button>
         </div>
-      <nav className="p-4">
+      <nav className="p-4 flex-1 overflow-y-auto">
         <ul>
           {navItems.map((item) => {
              if (!hasPermission(item.requiredPermission)) return null;

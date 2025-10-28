@@ -1,5 +1,4 @@
 
-
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import type {
     Page,
@@ -242,6 +241,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         const newBalance = entry.type === 'deposit' ? lastBalance + entry.amount : lastBalance - entry.amount;
         
         const { error } = await supabase.from('treasury_transactions').insert({
+            id: crypto.randomUUID(),
             ...entry,
             date: new Date().toISOString(),
             balance_after: newBalance

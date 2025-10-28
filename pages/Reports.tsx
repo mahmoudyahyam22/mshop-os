@@ -1,5 +1,4 @@
 
-
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import type { Sale, Product, ProductInstance, Purchase, Expense, InstallmentPlan, TreasuryTransaction, SalesReturn } from '../types';
 import PageHeader from '../components/PageHeader';
@@ -7,6 +6,17 @@ import { ChartBarIcon, CoinIcon, ArchiveIcon } from '../components/icons';
 
 // Note: Chart.js must be loaded via a script tag in index.html
 declare var Chart: any;
+
+// Helper functions for default date range
+const getStartOfMonth = () => {
+    const date = new Date();
+    return new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0];
+};
+
+const getToday = () => {
+    return new Date().toISOString().split('T')[0];
+};
+
 
 const ReportCard: React.FC<{ title: string; value: string | number; }> = ({ title, value }) => (
     <div className="glass-card p-4 rounded-lg">
@@ -20,7 +30,17 @@ const SalesChart: React.FC<{ sales: Sale[], timeframe: 'monthly' | 'daily' }> = 
     const chartInstance = useRef<any>(null);
 
     useEffect(() => {
-        if (!chartRef.current || sales.length === 0) return;
+        if (!chartRef.current || sales.length === 0) {
+            // Clear the canvas if there's no data
+            const ctx = chartRef.current?.getContext('2d');
+            if (ctx) {
+                ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+            }
+            if(chartInstance.current) {
+                chartInstance.current.destroy();
+            }
+            return;
+        }
         
         const formatOptions: Intl.DateTimeFormatOptions = timeframe === 'monthly'
             ? { month: 'short', year: '2-digit' }
@@ -95,6 +115,42 @@ interface ReportsProps {
 
 const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, purchases, expenses, installmentPlans, treasuryTransactions, salesReturns }) => {
   const [activeTab, setActiveTab] = useState<'sales' | 'financial' | 'inventory'>('sales');
+  const [startDate, setStartDate] = useState(getStartOfMonth());
+  const [endDate, setEndDate] = useState(getToday());
+
+  const filteredData = useMemo(() => {
+    if (!startDate || !endDate) {
+        return { sales, purchases, expenses, salesReturns };
+    }
+    const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+
+    const filteredSales = sales.filter(s => {
+        const saleDate = new Date(s.date);
+        return saleDate >= start && saleDate <= end;
+    });
+    const filteredPurchases = purchases.filter(p => {
+        const purchaseDate = new Date(p.date);
+        return purchaseDate >= start && purchaseDate <= end;
+    });
+    const filteredExpenses = expenses.filter(e => {
+        const expenseDate = new Date(e.date);
+        return expenseDate >= start && expenseDate <= end;
+    });
+    const filteredSalesReturns = salesReturns.filter(r => {
+        const returnDate = new Date(r.date);
+        return returnDate >= start && returnDate <= end;
+    });
+
+    return {
+        sales: filteredSales,
+        purchases: filteredPurchases,
+        expenses: filteredExpenses,
+        salesReturns: filteredSalesReturns
+    };
+}, [sales, purchases, expenses, salesReturns, startDate, endDate]);
   
   const productsWithStock = useMemo(() => {
     return products.map(p => {
@@ -108,20 +164,16 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
   
   // Sales Report calculations
   const salesReport = useMemo(() => {
-    const totalSalesValue = sales.reduce((sum, s) => sum + s.totalAmount, 0);
-    const totalReturnsValue = salesReturns.reduce((sum, r) => sum + r.totalRefundAmount, 0);
+    const { sales: currentSales, salesReturns: currentReturns } = filteredData;
+    const totalSalesValue = currentSales.reduce((sum, s) => sum + s.totalAmount, 0);
+    const totalReturnsValue = currentReturns.reduce((sum, r) => sum + r.totalRefundAmount, 0);
     const netSalesValue = totalSalesValue - totalReturnsValue;
     
-    // Profit includes base profit + interest, which is now correctly calculated in the Sale object
-    // FIX: Ensure sale.profit is treated as a number to prevent type errors from inconsistent data.
-    const totalProfitFromSales = sales.reduce((sum, s) => sum + (Number(s.profit) || 0), 0);
-    // FIX: Correctly calculate profit lost on returns by multiplying by quantity and ensuring values are numbers.
-    // FIX: Ensure item.quantity is treated as a number to prevent type errors.
-    const profitLostOnReturns = salesReturns.flatMap(r => r.items).reduce((sum, item) => sum + ((Number(item.unitPrice) || 0) - (Number(item.unitPurchasePrice) || 0)) * (Number(item.quantity) || 0), 0);
+    const totalProfitFromSales = currentSales.reduce((sum, s) => sum + (Number(s.profit) || 0), 0);
+    const profitLostOnReturns = currentReturns.flatMap(r => r.items).reduce((sum, item) => sum + ((Number(item.unitPrice) || 0) - (Number(item.unitPurchasePrice) || 0)) * (Number(item.quantity) || 0), 0);
     const netProfit = totalProfitFromSales - profitLostOnReturns;
 
-    const productSalesCount = sales.flatMap(s => s.items).reduce((acc, item) => {
-        // FIX: Ensure item.quantity is treated as a number to prevent type errors in the sort operation below.
+    const productSalesCount = currentSales.flatMap(s => s.items).reduce((acc, item) => {
         acc[item.productId] = (acc[item.productId] || 0) + (Number(item.quantity) || 0);
         return acc;
     }, {} as Record<string, number>);
@@ -134,23 +186,23 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
             quantity
         }));
         
-    return { totalSalesValue, netSalesValue, netProfit, topSelling };
-  }, [sales, products, salesReturns]);
+    return { totalSalesValue, netSalesValue, netProfit, topSelling, salesCount: currentSales.length };
+  }, [filteredData, products]);
 
   // Financial Report calculations
   const financialReport = useMemo(() => {
+      const { purchases: currentPurchases, expenses: currentExpenses, salesReturns: currentReturns } = filteredData;
       const totalSalesIncome = salesReport.totalSalesValue;
-      const totalReturns = salesReturns.reduce((sum, r) => sum + r.totalRefundAmount, 0);
+      const totalReturns = currentReturns.reduce((sum, r) => sum + r.totalRefundAmount, 0);
       const netSales = totalSalesIncome - totalReturns;
-      const totalPurchasesCost = purchases.reduce((sum, p) => sum + (p.unitPurchasePrice * p.quantity), 0);
-      const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-      // Net Profit calculation now accounts for everything
+      const totalPurchasesCost = currentPurchases.reduce((sum, p) => sum + (p.unitPurchasePrice * p.quantity), 0);
+      const totalExpenses = currentExpenses.reduce((sum, e) => sum + e.amount, 0);
       const finalNetProfit = salesReport.netProfit - totalExpenses;
       
       return { totalSalesIncome, totalReturns, netSales, totalPurchasesCost, totalExpenses, finalNetProfit };
-  }, [salesReport, purchases, expenses, salesReturns]);
+  }, [salesReport, filteredData]);
 
-  // Inventory Report calculations
+  // Inventory Report calculations (not date-based, it's a snapshot)
   const inventoryReport = useMemo(() => {
       const totalValue = productsWithStock.reduce((sum, p) => sum + (p.purchasePrice * p.stock), 0);
       const totalItems = productsWithStock.reduce((sum, p) => sum + p.stock, 0);
@@ -161,7 +213,30 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
 
   return (
     <div className="p-8 animate-fadeInUp">
-      <PageHeader title="التقارير" />
+      <PageHeader title="التقارير">
+        <div className="flex items-center gap-4 flex-wrap bg-black/20 p-2 rounded-lg">
+            <div>
+                <label htmlFor="startDate" className="text-sm text-[var(--text-secondary)] me-2">من</label>
+                <input 
+                    id="startDate"
+                    type="date" 
+                    value={startDate} 
+                    onChange={e => setStartDate(e.target.value)}
+                    className="form-input-futuristic bg-transparent border-gray-600 rounded-md p-2"
+                />
+            </div>
+            <div>
+                <label htmlFor="endDate" className="text-sm text-[var(--text-secondary)] me-2">إلى</label>
+                <input 
+                    id="endDate"
+                    type="date" 
+                    value={endDate}
+                    onChange={e => setEndDate(e.target.value)}
+                    className="form-input-futuristic bg-transparent border-gray-600 rounded-md p-2"
+                />
+            </div>
+        </div>
+      </PageHeader>
       
       <div className="mb-6 border-b border-[var(--border-glow)]">
         <nav className="-mb-px flex space-x-6 rtl:space-x-reverse">
@@ -177,13 +252,13 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
                 <ReportCard title="إجمالي المبيعات" value={salesReport.totalSalesValue.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} />
                 <ReportCard title="صافي المبيعات (بعد المرتجعات)" value={salesReport.netSalesValue.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} />
                 <ReportCard title="إجمالي الأرباح (من المبيعات والفوائد)" value={salesReport.netProfit.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} />
-                <ReportCard title="عدد الفواتير" value={sales.length} />
+                <ReportCard title="عدد الفواتير" value={salesReport.salesCount} />
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <div className="lg:col-span-2 glass-card p-6 rounded-lg">
-                    <h3 className="text-xl font-bold text-[var(--text-primary)] mb-4 flex items-center"><ChartBarIcon className="w-6 h-6 me-2 text-cyan-400"/> المبيعات الشهرية</h3>
+                    <h3 className="text-xl font-bold text-[var(--text-primary)] mb-4 flex items-center"><ChartBarIcon className="w-6 h-6 me-2 text-cyan-400"/> المبيعات خلال الفترة</h3>
                     <div className="h-96">
-                        <SalesChart sales={sales} timeframe="monthly" />
+                        <SalesChart sales={filteredData.sales} timeframe="monthly" />
                     </div>
                 </div>
                 <div className="glass-card p-6 rounded-lg">
@@ -211,6 +286,10 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
                 <ReportCard title="المصروفات الأخرى" value={financialReport.totalExpenses.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} />
                 <ReportCard title="صافي الربح النهائي" value={financialReport.finalNetProfit.toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' })} />
             </div>
+             <div className="glass-card p-6 rounded-lg">
+                <h3 className="text-xl font-bold text-[var(--text-primary)] mb-4">ملخص الفترة المحددة</h3>
+                <p>هذا الملخص يعرض الأرقام المالية النهائية للفترة من <span className="font-bold text-cyan-300">{new Date(startDate).toLocaleDateString('ar-EG')}</span> إلى <span className="font-bold text-cyan-300">{new Date(endDate).toLocaleDateString('ar-EG')}</span>.</p>
+            </div>
           </div>
       )}
 
@@ -222,7 +301,7 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
                 <ReportCard title="منتجات نفد مخزونها" value={inventoryReport.outOfStock} />
             </div>
             <div className="glass-card p-6 rounded-lg overflow-x-auto">
-                 <h3 className="text-xl font-bold text-[var(--text-primary)] mb-4">حالة المخزون الحالية</h3>
+                 <h3 className="text-xl font-bold text-[var(--text-primary)] mb-4">حالة المخزون الحالية (لا تتأثر بالفلتر الزمني)</h3>
                  <table className="w-full text-right">
                     <thead className="border-b-2 border-[var(--accent-cyan)]">
                         <tr>

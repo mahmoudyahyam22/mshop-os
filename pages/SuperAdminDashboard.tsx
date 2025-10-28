@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import type { User } from '../types';
+import type { User, Role } from '../types';
 import { supabase } from '../supabaseClient';
 import { UsersIcon, CheckCircleIcon, TrashIcon, LogoutIcon } from '../components/icons';
 
@@ -21,18 +21,22 @@ const StatCard: React.FC<{ title: string; value: number; icon: React.ElementType
 
 const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogout }) => {
     const [allUsers, setAllUsers] = useState<User[]>([]);
+    const [roles, setRoles] = useState<Role[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 
-    const fetchUsers = async () => {
+    const fetchData = async () => {
         if (!supabase) return;
         setIsLoading(true);
-        const { data, error } = await supabase.from('users').select('*');
-        if (error) {
-            console.error("Failed to fetch users:", error);
+        const [usersRes, rolesRes] = await Promise.all([
+            supabase.from('users').select('*'),
+            supabase.from('roles').select('*')
+        ]);
+
+        if (usersRes.error) {
+            console.error("Failed to fetch users:", usersRes.error);
             alert('فشل في جلب قائمة المستخدمين.');
         } else {
-            // Map from snake_case (db) to camelCase (app)
-            const mappedUsers = data.map(u => ({
+            const mappedUsers = usersRes.data.map(u => ({
                 username: u.username,
                 email: u.email,
                 passwordHash: u.password_hash || u.passwordHash,
@@ -41,11 +45,18 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogout }) =
             }));
             setAllUsers(mappedUsers);
         }
+        
+        if (rolesRes.error) {
+            console.error("Failed to fetch roles:", rolesRes.error);
+        } else {
+            setRoles(rolesRes.data as Role[]);
+        }
+
         setIsLoading(false);
     };
 
     useEffect(() => {
-        fetchUsers();
+        fetchData();
     }, []);
 
     const systemUsers = useMemo(() => allUsers.filter(u => u.username !== 'superadmin'), [allUsers]);
@@ -68,7 +79,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogout }) =
                  alert(`فشل تفعيل المستخدم: ${error.message}`);
             } else {
                 alert('تم تفعيل المستخدم بنجاح');
-                fetchUsers(); // Refresh the list
+                fetchData(); // Refresh the list
             }
         }
     };
@@ -85,8 +96,23 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogout }) =
                  alert(`فشل حذف المستخدم: ${error.message}`);
             } else {
                 alert('تم حذف المستخدم بنجاح');
-                fetchUsers(); // Refresh the list
+                fetchData(); // Refresh the list
             }
+        }
+    };
+
+    const updateUserRole = async (username: string, roleId: string) => {
+        if (!supabase) return;
+        const { error } = await supabase
+            .from('users')
+            .update({ role_id: roleId })
+            .eq('username', username);
+
+        if (error) {
+            alert(`فشل تحديث الدور: ${error.message}`);
+        } else {
+            alert('تم تحديث دور المستخدم بنجاح.');
+            fetchData(); // Refresh data
         }
     };
 
@@ -116,6 +142,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogout }) =
                                 <tr>
                                     <th className="p-3 text-[var(--accent-cyan)]">اسم المستخدم</th>
                                     <th className="p-3 text-[var(--accent-cyan)]">البريد الإلكتروني</th>
+                                    <th className="p-3 text-[var(--accent-cyan)]">الدور</th>
                                     <th className="p-3 text-[var(--accent-cyan)]">الحالة</th>
                                     <th className="p-3 text-[var(--accent-cyan)]">إجراءات</th>
                                 </tr>
@@ -125,6 +152,15 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogout }) =
                                     <tr key={user.username} className="border-b border-white/10 hover:bg-white/5">
                                         <td className="p-3 font-medium">{user.username}</td>
                                         <td className="p-3 text-[var(--text-secondary)]">{user.email}</td>
+                                        <td className="p-3">
+                                            <select 
+                                                value={user.roleId} 
+                                                onChange={e => updateUserRole(user.username, e.target.value)} 
+                                                className="form-input-futuristic !p-2 !border-none bg-black/20"
+                                            >
+                                                {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                                            </select>
+                                        </td>
                                         <td className="p-3">
                                             {user.status === 'approved' 
                                                 ? <span className="bg-green-500/20 text-green-300 text-xs font-medium px-2.5 py-0.5 rounded-full">مفعل</span> 
@@ -147,7 +183,7 @@ const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ onLogout }) =
                                 ))}
                                  {systemUsers.length === 0 && (
                                     <tr>
-                                        <td colSpan={4} className="text-center p-8 text-[var(--text-secondary)]">
+                                        <td colSpan={5} className="text-center p-8 text-[var(--text-secondary)]">
                                             لا يوجد مشتركين حتى الآن.
                                         </td>
                                     </tr>
