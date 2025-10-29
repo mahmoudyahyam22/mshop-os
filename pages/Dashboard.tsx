@@ -1,5 +1,9 @@
 
 
+
+
+
+
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import type { Sale, Product, Customer, InstallmentPlan, Page, Installment, CashTransferTransaction, CashTransferAccount, ProductInstance } from '../types';
 import { CustomerIcon, InstallmentsIcon, ProductIcon, SalesIcon, PurchasesIcon, TrendingUpIcon, TransferIcon, ChartBarIcon, ScaleIcon } from '../components/icons';
@@ -120,7 +124,7 @@ const Dashboard: React.FC<DashboardProps> = ({ sales, products, productInstances
 
   const totalSalesValue = sales.reduce((sum, sale) => sum + sale.totalAmount, 0).toLocaleString('ar-EG', { style: 'currency', currency: 'EGP' });
   const totalInstallmentDebt = installmentPlans.reduce((sum, plan) => sum + (plan.remainingAmount > 0 ? plan.remainingAmount : 0), 0);
-  // FIX: Ensured profit calculation is robust by safely converting potential non-numeric values.
+  // FIX: Ensured profit is treated as a number to prevent runtime errors from inconsistent data.
   const totalProfit = sales.reduce((sum, sale) => sum + (Number(sale.profit) || 0), 0); // This already includes interest
 
   const installmentProfits = useMemo(() => {
@@ -137,7 +141,8 @@ const Dashboard: React.FC<DashboardProps> = ({ sales, products, productInstances
         }
     });
 
-    const unrealized = totalInterest - realized;
+    // FIX: Explicitly cast operands to Number to resolve the arithmetic operation error.
+    const unrealized = Number(totalInterest) - Number(realized);
 
     return { realized, unrealized };
   }, [installmentPlans]);

@@ -1,5 +1,9 @@
 
 
+
+
+
+
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import type { Sale, Product, ProductInstance, Purchase, Expense, InstallmentPlan, TreasuryTransaction, SalesReturn } from '../types';
 import PageHeader from '../components/PageHeader';
@@ -170,8 +174,8 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
     const totalReturnsValue = currentReturns.reduce((sum, r) => sum + r.totalRefundAmount, 0);
     const netSalesValue = totalSalesValue - totalReturnsValue;
     
-    // FIX: Ensured profit calculations are robust by safely converting potential non-numeric values. This resolves the error on the following line.
     const totalProfitFromSales = currentSales.reduce((sum, s) => sum + (Number(s.profit || 0)), 0);
+    // FIX: Explicitly cast values to numbers to ensure safe arithmetic operations, preventing type errors.
     const profitLostOnReturns = currentReturns.flatMap(r => r.items).reduce((sum, item) => sum + ((Number(item.unitPrice || 0) - Number(item.unitPurchasePrice || 0)) * (Number(item.quantity) || 0)), 0);
     const netProfit = totalProfitFromSales - profitLostOnReturns;
 
@@ -199,7 +203,8 @@ const Reports: React.FC<ReportsProps> = ({ sales, products, productInstances, pu
       const netSales = totalSalesIncome - totalReturns;
       const totalPurchasesCost = currentPurchases.reduce((sum, p) => sum + ((Number(p.unitPurchasePrice) || 0) * (Number(p.quantity) || 0)), 0);
       const totalExpenses = currentExpenses.reduce((sum, e) => sum + e.amount, 0);
-      const finalNetProfit = salesReport.netProfit - totalExpenses;
+      // FIX: Explicitly cast operands to Number to resolve the arithmetic operation error.
+      const finalNetProfit = Number(salesReport.netProfit) - Number(totalExpenses);
       
       return { totalSalesIncome, totalReturns, netSales, totalPurchasesCost, totalExpenses, finalNetProfit };
   }, [salesReport, filteredData]);

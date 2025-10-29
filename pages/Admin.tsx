@@ -210,7 +210,7 @@ const Admin: React.FC<AdminProps> = ({ allUsers, currentUser, roles, deleteUser,
                                         <td className="p-3">
                                             <div className="flex items-center gap-3">
                                                 <button onClick={() => setRoleModal({isOpen: true, role: role})} className="text-blue-400 hover:text-blue-500"><EditIcon/></button>
-                                                {role.id !== 'r1' && role.id !== 'r2' && (
+                                                {role.id !== 'admin' && role.id !== 'user' && (
                                                     <button 
                                                         onClick={() => window.confirm('هل أنت متأكد؟') && deleteRole(role.id)} 
                                                         className="text-red-400 hover:text-red-500"

@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import type {
     Page,
@@ -220,35 +219,10 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
         alert(`حدث خطأ في ${context}: ${message}`);
     };
     
-    const addTreasuryEntry = async (entry: Omit<TreasuryTransaction, 'id' | 'balanceAfter' | 'date'>) => {
-        const lastBalance = data?.treasuryTransactions.at(-1)?.balanceAfter ?? 0;
-        const newBalance = entry.type === 'deposit' ? lastBalance + entry.amount : lastBalance - entry.amount;
-
-        const newTransaction: TreasuryTransaction = {
-            id: crypto.randomUUID(),
-            ...entry,
-            date: new Date().toISOString(),
-            balanceAfter: newBalance,
-        };
-        
-        // Optimistic UI update
-        setData(prev => prev ? { ...prev, treasuryTransactions: [...prev.treasuryTransactions, newTransaction] } : null);
-        
-        const { error } = await supabase.from('treasury_transactions').insert({
-            ...newTransaction,
-            balance_after: newTransaction.balanceAfter
-        });
-
-        if (error) {
-            handleError(error, 'addTreasuryEntry (insert)');
-            // On failure, reload to sync state with DB
-            await loadAppData();
-        }
-    };
-    
     const addProduct = async (product: Omit<Product, 'id'>) => {
         try {
             const productDataForDb = {
+                id: crypto.randomUUID(),
                 name: product.name,
                 brand: product.brand,
                 description: product.description,
@@ -300,6 +274,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     const addCustomer = async (customer: Omit<Customer, 'id'>) => {
         try {
             const customerDataForDb = {
+                id: crypto.randomUUID(),
                 name: customer.name,
                 phone: customer.phone,
                 address: customer.address,
@@ -344,6 +319,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     const addSupplier = async (supplier: Omit<Supplier, 'id'>) => {
         try {
             const supplierDataForDb = {
+                id: crypto.randomUUID(),
                 name: supplier.name,
                 contact_person: supplier.contactPerson,
                 phone: supplier.phone,
@@ -387,43 +363,39 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     
     const addPurchase = async (purchase: Omit<Purchase, 'id' | 'date'>) => {
         try {
-            await supabase.rpc('add_purchase_transaction', {
+            const { error } = await supabase.rpc('add_purchase_transaction', {
                 p_supplier_id: purchase.supplierId,
                 p_product_id: purchase.productId,
                 p_quantity: purchase.quantity,
                 p_unit_price: purchase.unitPurchasePrice,
                 p_serial_numbers: purchase.serialNumbers
             });
+            if (error) throw error;
             addToast('تم تسجيل الشراء بنجاح');
-            await loadAppData(); // Reload for this complex transaction to ensure consistency
+            await loadAppData();
         } catch(e) { handleError(e, 'addPurchase'); }
     };
 
     const addExpense = async (expense: Omit<Expense, 'id' | 'date'>) => {
         try {
-             const expenseDataForDb = {
-                category_id: expense.categoryId,
-                description: expense.description,
-                amount: expense.amount,
-            };
-            const { data: newExpenseData, error } = await supabase.from('expenses').insert(expenseDataForDb).select().single();
+            const { error } = await supabase.rpc('add_expense_transaction', {
+                p_category_id: expense.categoryId,
+                p_description: expense.description,
+                p_amount: expense.amount
+            });
             if (error) throw error;
-            await addTreasuryEntry({ type: 'withdrawal', amount: expense.amount, description: `مصروفات: ${expense.description}` });
-            setData(prev => prev ? { ...prev, expenses: [...prev.expenses, toCamelCase(newExpenseData)] } : null);
             addToast('تم تسجيل المصروف بنجاح');
-        } catch (e) {
-            handleError(e, 'addExpense');
-        }
+            await loadAppData();
+        } catch (e) { handleError(e, 'addExpense'); }
     };
+
     const addExpenseCategory = async (cat: Omit<ExpenseCategory, 'id'>) => {
         try {
-            const { data: newCat, error } = await supabase.from('expense_categories').insert(cat).select().single();
+            const { data: newCat, error } = await supabase.from('expense_categories').insert({ ...cat, id: crypto.randomUUID() }).select().single();
             if (error) throw error;
             setData(prev => prev ? { ...prev, expenseCategories: [...prev.expenseCategories, toCamelCase(newCat)] } : null);
             addToast('تمت إضافة الفئة');
-        } catch (e) {
-            handleError(e, 'addExpenseCategory');
-        }
+        } catch (e) { handleError(e, 'addExpenseCategory'); }
     };
     
     const updateStoreInfo = async (info: StoreInfo) => {
@@ -436,164 +408,77 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
                 commercial_record: info.commercialRecord,
                 tax_card_number: info.taxCardNumber,
             };
-            const { data: updatedInfo, error } = await supabase.from('store_info').update(infoForDb).select().single();
+            const { data: updatedInfo, error } = await supabase.from('store_info').update(infoForDb).eq('id', true).select().single();
             if (error) throw error;
             setData(prev => prev ? { ...prev, storeInfo: toCamelCase(updatedInfo) } : null);
             addToast('تم تحديث بيانات المتجر');
-        } catch (e) {
-            handleError(e, 'updateStoreInfo');
-        }
+        } catch (e) { handleError(e, 'updateStoreInfo'); }
     };
 
     const createSale = async (saleData: Omit<Sale, 'id' | 'date' | 'customerId'> & { customerId?: string }, installmentData?: InstallmentPlanCreationData, newCustomerData?: Omit<Customer, 'id'>): Promise<Sale | null> => {
        try {
             let customerId = saleData.customerId;
+            let tempNewCustomer: Customer | null = null;
             if (newCustomerData) {
-                const { data: newCustomer, error } = await supabase.from('customers').insert({ name: newCustomerData.name, phone: newCustomerData.phone, address: newCustomerData.address, national_id: newCustomerData.nationalId }).select().single();
-                if (error || !newCustomer) throw error || new Error("Failed to create customer");
-                customerId = newCustomer.id;
+                // To avoid a full reload, we can add the customer to local state temporarily
+                 tempNewCustomer = { ...newCustomerData, id: `temp-${crypto.randomUUID()}`};
+                 setData(prev => prev ? { ...prev, customers: [...prev.customers, tempNewCustomer!] } : null);
             }
 
-            const newSaleId = crypto.randomUUID();
-            const saleDate = new Date().toISOString();
-            await supabase.from('sales').insert({
-                id: newSaleId,
-                customer_id: customerId,
-                total_amount: saleData.totalAmount,
-                profit: saleData.profit,
-                date: saleDate,
-                payment_type: saleData.paymentType
+            const { data: newSaleId, error } = await supabase.rpc('create_sale_transaction', {
+                p_customer_id: customerId,
+                p_new_customer: newCustomerData, // RPC handles creation
+                p_items: saleData.items,
+                p_total_amount: saleData.totalAmount,
+                p_profit: saleData.profit,
+                p_payment_type: saleData.paymentType,
+                p_installment_data: installmentData
             });
-            
-            await supabase.from('sale_items').insert(saleData.items.map(item => ({
-                sale_id: newSaleId,
-                product_id: item.productId,
-                quantity: item.quantity,
-                unit_price: item.unitPrice,
-                unit_purchase_price: item.unitPurchasePrice,
-                serial_number: item.serialNumber
-            })));
-            
-            for (const item of saleData.items) {
-                if(item.serialNumber) {
-                    await supabase.from('product_instances').update({ status: 'sold', sale_id: newSaleId }).eq('serial_number', item.serialNumber);
-                } else {
-                    await supabase.rpc('increment_stock', { p_id: item.productId, p_quantity: -item.quantity });
-                }
-            }
-            
-            if(saleData.paymentType === 'cash') {
-                await addTreasuryEntry({ type: 'deposit', amount: saleData.totalAmount, description: `بيع نقدي (فاتورة #${newSaleId.substring(0,5)})`, relatedId: newSaleId });
-            } else if (installmentData && customerId) {
-                const principal = saleData.totalAmount;
-                const interestAmount = (principal - installmentData.downPayment) * (installmentData.interestRate / 100);
-                const totalAmount = principal + interestAmount;
-                const remainingAmount = totalAmount - installmentData.downPayment;
-                const monthlyInstallment = installmentData.numberOfMonths > 0 ? remainingAmount / installmentData.numberOfMonths : 0;
-                
-                const planId = crypto.randomUUID();
-                await supabase.from('installment_plans').insert({
-                    id: planId,
-                    sale_id: newSaleId,
-                    customer_id: customerId,
-                    principal_amount: principal,
-                    interest_rate: installmentData.interestRate,
-                    interest_amount: interestAmount,
-                    total_amount: totalAmount,
-                    down_payment: installmentData.downPayment,
-                    remaining_amount: remainingAmount,
-                    number_of_months: installmentData.numberOfMonths,
-                    monthly_installment: monthlyInstallment,
-                    start_date: saleDate,
-                    monthly_due_date: installmentData.monthlyDueDate,
-                    guarantor_name: installmentData.guarantorName,
-                    guarantor_phone: installmentData.guarantorPhone,
-                    guarantor_address: installmentData.guarantorAddress,
-                    guarantor_national_id: installmentData.guarantorNationalId,
-                });
-                
-                const installments = [];
-                for(let i = 1; i <= installmentData.numberOfMonths; i++) {
-                    const dueDate = new Date(saleDate);
-                    dueDate.setMonth(dueDate.getMonth() + i);
-                    dueDate.setDate(installmentData.monthlyDueDate);
-                    installments.push({
-                        plan_id: planId,
-                        due_date: dueDate.toISOString(),
-                        amount: monthlyInstallment,
-                        status: 'pending'
-                    });
-                }
-                await supabase.from('installments').insert(installments);
-                
-                if (installmentData.downPayment > 0) {
-                     await addTreasuryEntry({ type: 'deposit', amount: installmentData.downPayment, description: `مقدم تقسيط (فاتورة #${newSaleId.substring(0,5)})`, relatedId: newSaleId });
-                }
-            }
+
+            if (error) throw error;
 
             addToast("تمت عملية البيع بنجاح!");
-            await loadAppData(); // Reload for this complex transaction
-            return { ...saleData, customerId, id: newSaleId, date: saleDate };
-
+            await loadAppData(); // Reload data to get all new related records
+            const finalSale = data?.sales.find(s => s.id === newSaleId) || { ...saleData, id: newSaleId, date: new Date().toISOString() };
+            return finalSale;
         } catch (e) {
             handleError(e, 'createSale');
+            await loadAppData(); // reload on error to revert optimistic updates
             return null;
         }
     };
     
     const createSalesReturn = async (returnData: Omit<SalesReturn, 'id' | 'date'>) => {
         try {
-            const returnId = crypto.randomUUID();
-            const returnForDb = {
-                id: returnId,
-                original_sale_id: returnData.originalSaleId,
-                customer_id: returnData.customerId,
-                total_refund_amount: returnData.totalRefundAmount,
-                date: new Date().toISOString()
-            };
-            await supabase.from('sales_returns').insert(returnForDb);
+            const { error } = await supabase.rpc('create_return_transaction', {
+                p_original_sale_id: returnData.originalSaleId,
+                p_customer_id: returnData.customerId,
+                p_total_refund_amount: returnData.totalRefundAmount,
+                p_items: returnData.items
+            });
 
-            const itemsForDb = returnData.items.map(i => ({
-                return_id: returnId,
-                product_id: i.productId,
-                quantity: i.quantity,
-                unit_price: i.unitPrice,
-                unit_purchase_price: i.unitPurchasePrice,
-                serial_number: i.serialNumber
-            }));
-            await supabase.from('sales_return_items').insert(itemsForDb);
-            
-            for (const item of returnData.items) {
-                if (item.serialNumber) {
-                    await supabase.from('product_instances').update({ status: 'in_stock', sale_id: null }).eq('serial_number', item.serialNumber);
-                } else {
-                    await supabase.rpc('increment_stock', { p_id: item.productId, p_quantity: item.quantity });
-                }
-            }
-            
-            await addTreasuryEntry({ type: 'withdrawal', amount: returnData.totalRefundAmount, description: `مرتجع مبيعات (فاتورة #${returnId.substring(0,5)})`, relatedId: returnId });
+            if (error) throw error;
 
             addToast('تم تسجيل المرتجع');
-            await loadAppData(); // Reload for this complex transaction
-        } catch (e) {
-            handleError(e, 'createSalesReturn');
-        }
+            await loadAppData();
+        } catch (e) { handleError(e, 'createSalesReturn'); }
     };
     
     const addPayment = async (payment: { installmentPlanId: string; installmentId: string; amount: number; }) => {
         try {
-            await supabase.from('installments').update({ status: 'paid', payment_date: new Date().toISOString() }).eq('id', payment.installmentId);
-            await addTreasuryEntry({ type: 'deposit', amount: payment.amount, description: `تحصيل قسط (خطة #${payment.installmentPlanId.substring(0,5)})`, relatedId: payment.installmentId });
+            const { error } = await supabase.rpc('process_installment_payment', {
+                p_installment_id: payment.installmentId
+            });
+            if (error) throw error;
             addToast('تم تحصيل القسط');
-            await loadAppData(); // Reload needed to update plan details correctly
-        } catch (e) {
-            handleError(e, 'addPayment');
-        }
+            await loadAppData();
+        } catch (e) { handleError(e, 'addPayment'); }
     };
 
     const addJob = async (job: Omit<MaintenanceJob, 'id' | 'status' | 'receivedDate'>) => {
         try {
-             const jobForDb = {
+            const jobForDb = {
+                id: crypto.randomUUID(),
                 customer_name: job.customerName,
                 customer_phone: job.customerPhone,
                 device_type: job.deviceType,
@@ -611,19 +496,17 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
 
     const updateJobStatus = async (jobId: string, newStatus: MaintenanceJob['status']) => {
         try {
-            let updateData: any = { status: newStatus };
-            if (newStatus === 'تم الإصلاح') updateData.repaired_date = new Date().toISOString();
-            if (newStatus === 'تم التسليم') updateData.delivered_date = new Date().toISOString();
-            
-            const { data: updatedJobData, error } = await supabase.from('maintenance_jobs').update(updateData).eq('id', jobId).select().single();
-            if (error) throw error;
-            
-            if (newStatus === 'تم التسليم' && updatedJobData.cost > 0) {
-                 await addTreasuryEntry({ type: 'deposit', amount: updatedJobData.cost, description: `تحصيل صيانة (${updatedJobData.customer_name})`, relatedId: jobId });
+            if (newStatus === 'تم التسليم') {
+                 const { error } = await supabase.rpc('complete_maintenance_job', { p_job_id: jobId });
+                 if (error) throw error;
+            } else {
+                let updateData: any = { status: newStatus };
+                if (newStatus === 'تم الإصلاح') updateData.repaired_date = new Date().toISOString();
+                const { error } = await supabase.from('maintenance_jobs').update(updateData).eq('id', jobId);
+                if (error) throw error;
             }
-            
-            setData(prev => prev ? {...prev, maintenanceJobs: prev.maintenanceJobs.map(j => j.id === jobId ? toCamelCase(updatedJobData) : j)}: null);
             addToast('تم تحديث حالة الصيانة');
+            await loadAppData();
         } catch(e) { handleError(e, 'updateJobStatus'); }
     };
     
@@ -632,7 +515,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
              const settingsForDb = {
                 link_cash_transfers_to_main_treasury: settings.linkCashTransfersToMainTreasury
             };
-            const {data: updatedSettings, error} = await supabase.from('app_settings').update(settingsForDb).select().single();
+            const {data: updatedSettings, error} = await supabase.from('app_settings').update(settingsForDb).eq('id', true).select().single();
             if (error) throw error;
             setData(prev => prev ? {...prev, appSettings: toCamelCase(updatedSettings)}: null);
             addToast('تم تحديث الإعدادات');
@@ -642,6 +525,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     const addCashAccount = async (account: Omit<CashTransferAccount, 'id' | 'balance'>) => {
         try {
              const accountForDb = {
+                id: crypto.randomUUID(),
                 name: account.name,
                 number: account.number,
                 provider: account.provider,
@@ -666,36 +550,44 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
 
     const addCashTransaction = async (transaction: Omit<CashTransferTransaction, 'id' | 'date'>) => {
         try {
-             const transactionForDb = {
-                account_id: transaction.accountId,
-                type: transaction.type,
-                amount: transaction.amount,
-                commission: transaction.commission,
-                customer_phone: transaction.customerPhone
-            };
-            await supabase.from('cash_transfer_transactions').insert(transactionForDb);
-            
-            const balanceChange = transaction.type === 'deposit' ? -transaction.amount : transaction.amount;
-            await supabase.rpc('increment_cash_balance', { acc_id: transaction.accountId, p_amount: balanceChange });
-            
-            if (data?.appSettings.linkCashTransfersToMainTreasury) {
-                if (transaction.type === 'deposit') {
-                    await addTreasuryEntry({ type: 'deposit', amount: transaction.amount, description: `إيداع تحويل كاش` });
-                } else {
-                    await addTreasuryEntry({ type: 'withdrawal', amount: transaction.amount, description: `سحب تحويل كاش` });
-                }
-                 await addTreasuryEntry({ type: 'deposit', amount: transaction.commission, description: `عمولة تحويل كاش` });
-            }
+             const { error } = await supabase.rpc('process_cash_transfer', {
+                p_account_id: transaction.accountId,
+                p_type: transaction.type,
+                p_amount: transaction.amount,
+                p_commission: transaction.commission,
+                p_customer_phone: transaction.customerPhone,
+                p_link_to_main_treasury: data?.appSettings.linkCashTransfersToMainTreasury ?? false
+            });
+            if (error) throw error;
 
             addToast('تمت العملية بنجاح!');
-            await loadAppData(); // Reload for this complex transaction
+            await loadAppData();
         } catch(e) { handleError(e, 'addCashTransaction'); }
     };
 
-    const addTreasuryTransaction = async (transaction: Omit<TreasuryTransaction, 'id' | 'date' | 'balanceAfter' | 'relatedId'>) => {
+    // FIX: Changed the function parameter type to allow `relatedId` to be passed, resolving the type error.
+    const addTreasuryTransaction = async (transaction: Omit<TreasuryTransaction, 'id' | 'date' | 'balanceAfter'>) => {
         try {
-            await addTreasuryEntry(transaction);
+            // This is for manual additions; the RPC logic is now inside other functions.
+            // FIX: Replaced .at(-1) with array[array.length - 1] for broader compatibility.
+            const lastBalance = data?.treasuryTransactions[data.treasuryTransactions.length - 1]?.balanceAfter ?? 0;
+            const newBalance = transaction.type === 'deposit' ? lastBalance + transaction.amount : lastBalance - transaction.amount;
+
+            const newTransaction = {
+                id: crypto.randomUUID(),
+                type: transaction.type,
+                amount: transaction.amount,
+                description: transaction.description,
+                date: new Date().toISOString(),
+                balance_after: newBalance,
+                related_id: transaction.relatedId,
+            };
+
+            const { error } = await supabase.from('treasury_transactions').insert(newTransaction);
+            if (error) throw error;
+
             addToast('تمت الحركة بنجاح');
+            await loadAppData();
         } catch (e) {
             handleError(e, 'addTreasuryTransaction');
         }
@@ -739,7 +631,7 @@ const ShopApp: React.FC<ShopAppProps> = ({ currentUser, onLogout }) => {
     
     const addRole = async (role: Omit<Role, 'id'>) => {
         try {
-            const {data: newRole, error} = await supabase.from('roles').insert(role).select().single();
+            const {data: newRole, error} = await supabase.from('roles').insert({...role, id: crypto.randomUUID()}).select().single();
             if (error) throw error;
             setData(prev => prev ? {...prev, roles: [...prev.roles, toCamelCase(newRole)]} : null);
             addToast('تم إضافة الدور');

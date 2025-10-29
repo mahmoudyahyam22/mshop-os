@@ -7,7 +7,8 @@ import Portal from '../components/Portal';
 
 interface TreasuryProps {
   transactions: TreasuryTransaction[];
-  addTransaction: (transaction: Omit<TreasuryTransaction, 'id' | 'date' | 'balanceAfter' | 'relatedId'>) => void;
+  // FIX: Updated the type to match the corrected signature in ShopApp.tsx, allowing optional relatedId.
+  addTransaction: (transaction: Omit<TreasuryTransaction, 'id' | 'date' | 'balanceAfter'>) => void;
 }
 
 const TreasuryFormModal: React.FC<{
